@@ -1,0 +1,190 @@
+---
+title: "downloading HADISST SST data"
+author: "Sarah Willington"
+date: "2025-09-19"
+output: html_document
+---
+
+
+# hadisst_subset.R
+
+Download HadISST monthly SST from met office, subset by lon/lat/years
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r libraries}
+
+library(ncdf4)        # For handling netCDF files    
+library(lubridate)    # For date manipulation
+library(rerddap)
+library(tidyverse)    # For data manipulation and plotting
+library(here)
+
+library(terra)
+library(R.utils)
+```
+
+```{r set directories}
+# Set directories
+project_dir <- here::here()
+output_dir <- file.path(project_dir, "0_data", "01_raw_data")
+```
+
+
+```{r view HadISST meta data}
+
+# get dataset info object
+info_hadisst <- info("erdHadISST")
+
+# see coordinate metadata
+info_hadisst$alldata$latitude
+info_hadisst$alldata$longitude
+
+```
+
+```{r download directly from met office and subset}
+
+
+# ---- Read site bbox table ----
+latlon_path <- file.path(project_dir, "0_data", "01_raw_data", "oto_sites_HadISST.csv")
+latlon <- read_csv(latlon_path, show_col_types = FALSE)
+
+get_lat_range <- function(sitename, tbl = latlon) {
+  r <- tbl %>% filter(site == sitename) %>% slice(1)
+  if (nrow(r) == 0) stop("Site not found: ", sitename)
+  c(r$latmin, r$latmax)
+}
+
+get_lon_range <- function(sitename, tbl = latlon) {
+  r <- tbl %>% filter(site == sitename) %>% slice(1)
+  if (nrow(r) == 0) stop("Site not found: ", sitename)
+  c(r$lonmin, r$lonmax)
+}
+
+# ---- Download HadISST SST to temp, unzip to temp, open as SpatRaster ----
+download_hadisst_sst_temp <- function() {
+  url <- "https://www.metoffice.gov.uk/hadobs/hadisst/data/HadISST_sst.nc.gz"
+
+  stamp   <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  gz_path <- file.path(tempdir(), paste0("HadISST_sst_", stamp, ".nc.gz"))
+  nc_path <- sub("\\.gz$", "", gz_path)
+
+  message("Downloading: ", gz_path)
+  download.file(url, gz_path, mode = "wb", quiet = FALSE)
+
+  message("Unzipping: ", nc_path)
+  R.utils::gunzip(gz_path, destname = nc_path, overwrite = TRUE, remove = FALSE)
+
+  sst <- terra::rast(nc_path, subds = "sst")
+
+  # Ensure time exists (HadISST monthly from 1870; using mid-month convention)
+  tm <- terra::time(sst)
+  if (is.null(tm) || all(is.na(tm))) {
+    tm <- seq(as.Date("1870-01-16"), by = "month", length.out = nlyr(sst))
+    terra::time(sst) <- tm
+  }
+
+  list(sst = sst, nc_path = nc_path, gz_path = gz_path)
+}
+
+# ---- Longitude convention helper (if dataset is 0..360, convert negative lons) ----
+coerce_lon_to_dataset <- function(lon_range, sst) {
+  xr <- terra::ext(sst)
+  ds_lon_min <- xr[1]
+  ds_lon_max <- xr[2]
+
+  # If dataset looks like 0..360
+  if (ds_lon_min >= 0 && ds_lon_max > 180) {
+    return(ifelse(lon_range < 0, lon_range + 360, lon_range))
+  }
+  lon_range
+}
+
+# ---- Subset one site to monthly spatial mean SST ----
+subset_site_monthly_mean <- function(sst, sitename, lat_range, lon_range, years) {
+  # validation
+  stopifnot(length(lat_range) == 2, length(lon_range) == 2)
+  if (any(!is.finite(lat_range)) || any(!is.finite(lon_range))) {
+    stop("Non-finite lat/lon bounds for site: ", sitename)
+  }
+
+  lat_range <- sort(lat_range)
+  lon_range <- sort(lon_range)
+
+  lon_range2 <- coerce_lon_to_dataset(lon_range, sst)
+
+  e <- terra::ext(lon_range2[1], lon_range2[2], lat_range[1], lat_range[2])
+  sst_crop <- terra::crop(sst, e)
+
+  # time subset
+  tm <- as.Date(terra::time(sst_crop))
+  keep <- tm >= as.Date(sprintf("%d-01-01", min(years))) &
+          tm <= as.Date(sprintf("%d-12-31", max(years)))
+
+  sst_crop <- sst_crop[[which(keep)]]
+  tm_keep  <- as.Date(terra::time(sst_crop))
+
+  # spatial mean for each monthly layer
+  sst_mean <- terra::global(sst_crop, fun = "mean", na.rm = TRUE)[, 1]
+
+  tibble(
+    site     = sitename,
+    date     = tm_keep,
+    year     = lubridate::year(date),
+    month    = lubridate::month(date),
+    sst_mean = as.numeric(sst_mean)
+  )
+}
+
+# ---- Main wrapper: download once, subset N sites, save only subsets, delete big files ----
+get_hadisst_for_sites <- function(
+  sites,
+  years,
+  out_dir = file.path(project_dir, "0_data", "HadISST_subsets")
+) {
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  tmp <- download_hadisst_sst_temp()
+  on.exit({
+    if (file.exists(tmp$nc_path)) file.remove(tmp$nc_path)
+    if (file.exists(tmp$gz_path)) file.remove(tmp$gz_path)
+  }, add = TRUE)
+
+  sst <- tmp$sst
+
+  out_list <- lapply(sites, function(s) {
+    lat_range <- get_lat_range(s)
+    lon_range <- get_lon_range(s)
+
+    message("Subsetting ", s,
+            " | lat: ", paste(lat_range, collapse = ", "),
+            " | lon: ", paste(lon_range, collapse = ", "),
+            " | years: ", paste(range(years), collapse = "-"))
+
+    df <- subset_site_monthly_mean(sst, s, lat_range, lon_range, years)
+
+    out_file <- file.path(out_dir, paste0("HadISST_sst_mean_", s, "_", min(years), "-", max(years), ".csv"))
+    readr::write_csv(df, out_file)
+
+    df
+  })
+
+  bind_rows(out_list)
+}
+
+# ============================
+# usage
+# ============================
+years <- 1900:2025
+
+# one site
+vic_df <- get_hadisst_for_sites("VIC", years)
+
+# all sites in latlon csv
+all_df <- get_hadisst_for_sites(sort(unique(latlon$site)), years)
+
+write_csv(all_df, file = file.path(output_dir,paste("HadISST_all_sites_monthly_mean.csv" )))
+```
