@@ -1,0 +1,439 @@
+---
+title: "otolith paper plots"
+author: "Sarah Willington"
+date: "2026-04-01"
+output: html_document
+---
+
+
+code for site map, temperature and data summary plots
+
+```{r libraries}
+library(tidyverse)
+library(here)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(cowplot)
+library(patchwork)
+```
+
+
+```{r load data}
+project_dir <- here::here()
+hadisst_summer <- read_csv(file.path(project_dir, "0_data", "02_cleaned_data", "hadisst_summer.csv"))
+d <- read_csv(file.path(project_dir, "0_data", "02_cleaned_data", "otolith_analysis.csv"))
+boxes_raw <- read_csv(file.path(project_dir, "0_data", "01_raw_data", "oto_sites_HadISST_map.csv"))
+boxes_raw <- boxes_raw |> 
+  mutate(site = factor(site, ordered = TRUE, 
+                       levels = c("NSI", "SYD", "NAR", "VIC", "FI", "NEC", "EC", "SEC", "HCR" )))
+
+```
+
+### temperature plot
+
+```{r basic temp plot for paper}
+# hcl_palettes(plot = TRUE)
+# pal <- sequential_hcl(palette = "red-blue", n=9)
+# pal <- diverge_hcl(palette = "blue-red 3", n=9)
+# pal <- qualitative_hcl(palette = "dark 2", n=9)
+
+
+cbPalette <- c("#D55E00","#CC79A7", "#E69F00","#EED202", "#000000", "#56B4E9", "#009E73", "#0072B2",   "grey30") 
+colorspace::swatchplot(cbPalette, cvd = TRUE)
+
+
+hadisst_summer_plot <- hadisst_summer |>  
+  filter(site!="TAS"& site!="pb" & site!="ehn" ) |> 
+   mutate(site = case_when(
+                          site == "sydney" ~ "SYD", 
+                          site == "narooma" ~ "NAR",
+                          site == "hcr" ~ "HCR",
+                          TRUE ~ site)) |> 
+ mutate(year = as.numeric(year), 
+         site = factor(site, ordered = TRUE, 
+                       levels = c("NSI", "SYD", "NAR", "VIC", "FI", "NEC", "EC", "SEC", "HCR" ))) |> 
+  filter(year>1923)
+
+summer_pl <- ggplot(hadisst_summer_plot, aes(year, sst_summer, group = site, colour = site))+
+  geom_line(linewidth = 0.3)+
+   scale_color_manual(values = cbPalette)+
+  labs(x = "Year", y = expression("Mean summer SST ( " * degree * "C)"), colour = "Site")+
+  scale_x_continuous(breaks = scales::breaks_pretty(n = 6))+
+  scale_y_continuous(breaks = scales::breaks_pretty(n = 6))+
+  guides(colour = guide_legend(override.aes = list(linewidth = 1.2)))+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(size =9 ),
+    axis.text = element_text(size = 8), 
+    legend.text = element_text(size = 7),
+    legend.title = element_text(size = 9), 
+    axis.title.x = element_blank())
+summer_pl
+
+summer_pl+
+  theme(plot.margin = margin(t = 5, r = 5, b = 5, l = 5))
+
+# ggsave(
+#   "03_graphics/sst_base.png",
+#   summer_pl,
+#   width = 10,
+#   height = 9,
+#   dpi = 600,
+#   units = "cm"
+# )
+
+
+```
+
+
+### data summery plot 
+
+```{r data summary plot}
+# 0) enforce site order
+
+site_levels <- c("NSI","SYD","NAR","VIC","FI","NEC","EC","SEC","HCR")
+d2 <- d %>% mutate(site = case_when(
+  site == "sydney" ~ "SYD", 
+  site == "narooma" ~ "NAR",
+  site == "hcr" ~ "HCR",
+  TRUE ~ site)) |>
+  mutate(site = factor(site, levels = site_levels))
+
+fish_order <- d2 %>%
+  group_by(FishID) %>%
+  summarise(
+    site = first(site),
+    first_year = min(fishyear, na.rm = TRUE),
+    last_year  = max(fishyear, na.rm = TRUE),
+    oldest_age = max(age, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(site), first_year, FishID) %>%
+  mutate(y = row_number())
+
+d_plot <- d2 %>%
+  left_join(fish_order %>% select(FishID, y), by = "FishID")
+
+site_labs <- fish_order %>%
+  group_by(site) %>%
+  summarise(
+    y_mid = mean(y),
+    x_lab = min(first_year) + 1,
+    .groups = "drop"
+  )%>%
+  mutate(
+    x_lab = if_else(site == "HCR", x_lab - 3, x_lab)) |> 
+  mutate(
+    x_lab = if_else(site == "VIC", x_lab - 2, x_lab)) |> 
+  mutate(
+    x_lab = if_else(site == "SEC", x_lab + 8, x_lab)) |> 
+  mutate(
+    x_lab = if_else(site == "FI", x_lab - 2, x_lab)) |> 
+  mutate(
+    x_lab = if_else(site == "NAR", x_lab - 3, x_lab)) |> 
+  mutate(
+      y_lab = if_else(site == "HCR", y_mid - 30, y_mid)  
+    )
+
+
+
+cbPalette <- c("#D55E00","#CC79A7", "#E69F00","#EED202", "#000000", "#56B4E9", "#009E73", "#0072B2",   "grey30") 
+
+site_cols <- setNames(cbPalette, site_levels) 
+site_scale <- scale_colour_manual(
+  values = site_cols,
+  breaks = site_levels,
+  drop = FALSE,
+  name = "Site"
+)
+
+p <- ggplot(d_plot, aes(x = fishyear, y = y, group = FishID, colour = site)) +
+  geom_line(linewidth = 0.5, alpha = 0.9) +
+  geom_text(
+    data = site_labs,
+    aes(x = x_lab, y = y_mid, label = site, colour = site),
+    inherit.aes = FALSE, size = 2.5,
+    hjust = 1, nudge_y = -5, fontface = "bold") +
+  #scale_colour_manual(values = site_cols, breaks = site_levels, drop = FALSE) +
+  site_scale+
+  scale_x_continuous(breaks = scales::breaks_pretty(n = 6))+
+  labs(x = "Year", y = "N individuals") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),  
+        panel.grid.minor = element_blank(),
+        legend.position = "none", 
+        axis.title = element_text(size =9 ),
+        axis.text = element_text(size = 8))
+p
+
+# ggsave(
+#   "03_graphics/oto_data_summary.png",
+#   p,
+#   width = 8,
+#   height = 8,
+#   dpi = 600,
+#   units = "cm"
+# )
+
+```
+
+### site map plot
+
+```{r}
+# 2) Convert each row into an sf polygon (rectangle) + label point (centroid)
+boxes_sf <- boxes_raw |>
+  rowwise() |>
+  mutate(
+    geom = st_as_sfc(
+      st_bbox(
+        c(xmin = lonmin, ymin = latmin, xmax = lonmax, ymax = latmax),
+        crs = st_crs(4326)   # lon/lat WGS84
+      )
+    )
+  ) |>
+  ungroup() |>
+  st_as_sf() |>
+  st_set_crs(4326)
+
+
+# 3) Base map: Australia outline (Natural Earth)
+
+aus <- rnaturalearth::ne_download(
+  scale = 10,
+  type = "land",
+  category = "physical",
+  returnclass = "sf"
+) |>
+  st_transform(4326)
+
+# Crop to Australia region (keeps TAS + nearby islands)
+aus <- st_crop(aus, xmin = 110, xmax = 160, ymin = -46, ymax = -8)
+
+# Coastline as boundary of land polygons
+coastline <- st_boundary(aus) |> st_cast("MULTILINESTRING")
+
+# Projected CRS for distance ops
+crs_m <- 3577
+
+boxes_m   <- st_transform(boxes_sf, crs_m)
+coast_m   <- st_transform(coastline, crs_m) |> st_make_valid()
+centres_m <- st_centroid(boxes_m)
+
+anchors_m <- purrr::map2(
+  st_geometry(boxes_m),
+  st_geometry(centres_m),
+  \(box_geom, centre_geom) {
+    
+    box_sfc    <- st_sfc(box_geom, crs = crs_m)
+    centre_sfc <- st_sfc(centre_geom, crs = crs_m)
+    
+    seg <- suppressWarnings(st_intersection(coast_m, box_sfc))
+    
+    if (length(seg) == 0 || all(st_is_empty(seg))) {
+      return(centre_geom) 
+    }
+    
+    seg_u <- st_union(seg)
+    
+    np  <- st_nearest_points(centre_sfc, seg_u)   
+    pts <- st_cast(np, "POINT")                  
+    
+    pts[[2]]  # <-- return sfg (2nd point = on coastline)
+  }
+) |>
+  st_sfc(crs = crs_m) |>
+  st_as_sf() |>
+  mutate(site = boxes_sf$site)
+
+anchors_sf <- st_transform(anchors_m, 4326)
+# --- labels: nudged offshore (east + south) from the anchor ---
+# (tweak dx/dy to move labels further over ocean)
+dx <- 0.15
+dy <- 0.15
+
+anchors_xy <- st_coordinates(anchors_sf) |> as_tibble() |> rename(lon = X, lat = Y)
+
+labels_df <- tibble(
+  site = anchors_sf$site,
+  lon  = anchors_xy$lon + dx,
+  lat  = anchors_xy$lat - dy
+)
+
+# --- override NEC + HCR anchor locations  ---
+
+anchors_xy <- st_coordinates(anchors_sf) |>
+  as_tibble() |>
+  rename(lon = X, lat = Y) |>
+  mutate(site = anchors_sf$site)
+
+# Nudge rules:
+# NEC: push east so it sits on the NE coast
+# HCR: move south (and slightly east) so it's off south Bruny
+anchors_xy <- anchors_xy |>
+  mutate(
+    lon = case_when(
+      site == "NEC" ~ lon + 0.35,   # <-- adjust this if needed
+      site == "HCR" ~ lon + 0.09,   # <-- optional tiny east tweak
+      TRUE ~ lon
+    ),
+    lat = case_when(
+      site == "HCR" ~ lat - 0.4,   # <-- adjust this if needed
+      TRUE ~ lat
+    )
+  )
+
+# Rebuild anchors_sf
+anchors_sf <- st_as_sf(anchors_xy, coords = c("lon", "lat"), crs = 4326)
+
+
+# Rebuild labels from (updated) anchors
+dx <- 0.15
+dy <- 0.15
+
+labels_df <- anchors_xy |>
+  transmute(site, lon = lon + dx, lat = lat - dy)
+
+# move just FI label (tweak values)
+labels_df <- labels_df |>
+  mutate(
+    lon = if_else(site == "FI", lon - 1.15, lon),  # move east (+) / west (-)
+    lat = if_else(site == "FI", lat + 0.25, lat),    # move north (+) / south (-)
+    
+    # HCR: move west (lon -) and south (lat -)
+    lon = if_else(site == "HCR", lon - 0.30, lon),
+    lat = if_else(site == "HCR", lat - 0.15, lat)
+  )
+
+# then rebuild labels_sf (as you already do)
+labels_sf <- st_as_sf(labels_df, coords = c("lon", "lat"), crs = 4326)
+
+
+# 4) SE-Aus extent from your boxes (+ padding)
+pad <- 1.5
+xlim <- range(c(boxes_raw$lonmin, boxes_raw$lonmax)) + c(-pad, pad)
+ylim <- range(c(boxes_raw$latmin, boxes_raw$latmax)) + c(-pad, pad)
+
+# Make an sf rectangle showing the SE-Aus zoom extent (for inset highlight)
+zoom_bbox_sf <- st_as_sfc(st_bbox(c(xmin = xlim[1], ymin = ylim[1], xmax = xlim[2], ymax = ylim[2]),
+                                  crs = st_crs(4326))) |>
+  st_sf(geometry = _)
+
+site_levels <- c("NSI","SYD","NAR","VIC","FI","NEC","EC","SEC","HCR")
+
+# force simple factor (NOT ordered) for anything used in aes(colour = site)
+anchors_sf <- anchors_sf |> mutate(site = factor(as.character(site), levels = site_levels))
+labels_sf  <- labels_sf  |> mutate(site = factor(as.character(site), levels = site_levels))
+
+
+cbPalette <- c("#D55E00","#CC79A7", "#E69F00","#EED202", "#000000",
+               "#56B4E9", "#009E73", "#0072B2", "grey30")
+
+site_cols <- setNames(cbPalette, site_levels)  # MUST be a named vector
+
+# 5) Main (zoomed) plot
+p_main <- ggplot() +
+  geom_sf(data = aus, linewidth = 0.2, fill = "grey85") +
+  # anchor dots
+  geom_sf(data = anchors_sf, aes(colour=site), size = 1.7) +
+  # labels
+  geom_sf_text(
+    data = labels_sf, aes(label = site, colour = site),
+    size = 2.9, fontface = "bold", hjust = -0.35, vjust = 1
+  ) +
+  scale_colour_manual(values = site_cols, breaks = site_levels, drop = FALSE) +
+  scale_x_continuous(breaks = scales::breaks_pretty(n = 2))+
+  coord_sf(xlim = xlim, ylim = ylim, expand = FALSE) +
+  labs(x = expression("Longitude ("*degree*"E)"), 
+       y =  expression("Latitude ("*degree*"S)")) +
+  theme_bw() +
+  theme(panel.grid.major = element_line(linewidth = 0.2), 
+        legend.position = "none",
+        axis.title = element_text(size = 9), 
+        axis.text = element_text(size = 8))
+
+# main no colour
+p_main_bw <- ggplot() +
+  geom_sf(data = aus, linewidth = 0.2, fill = "grey85") +
+  # anchor dots
+  geom_sf(data = anchors_sf, size = 1.7) +
+  # labels
+  geom_sf_text(
+    data = labels_sf, aes(label = site),
+    size = 2.9, fontface = "bold", hjust = -0.35, vjust = 1
+  ) +
+  scale_x_continuous(breaks = scales::breaks_pretty(n = 2))+
+  coord_sf(xlim = xlim, ylim = ylim, expand = FALSE) +
+  labs(x = expression("Longitude ("*degree*"E)"), 
+       y =  expression("Latitude ("*degree*"S)")) +
+  theme_bw() +
+  theme(panel.grid.major = element_line(linewidth = 0.2), 
+        legend.position = "none",
+        axis.title = element_text(size = 9), 
+        axis.text = element_text(size = 8),
+        panel.background = element_rect(fill = NA, colour = NA),
+        plot.background  = element_rect(fill = NA, colour = NA))
+
+# 6) Inset (whole Australia) plot with zoom box highlighted
+p_inset <- ggplot() +
+  geom_sf(data = aus, fill = "grey85", linewidth = 0.3) +
+  geom_sf(data = zoom_bbox_sf, fill = NA, linewidth = 0.3, colour = "black") +
+  coord_sf(expand = FALSE) +
+  theme_void() +
+  theme(
+    plot.background = element_rect(fill = "white", colour = "black", linewidth = 0.4)
+  )
+
+
+
+p <- p +
+  theme(plot.margin = margin(t = 5, r = 5, b = 5, l = 5))
+summer_pl <- summer_pl +
+  theme(plot.margin = margin(t = 5, r = 5, b = 5, l = 5))
+
+right_plots <- (summer_pl / p) + plot_layout(heights = c(1, 1))
+
+map_plot <- p_main +
+  inset_element(
+    p_inset,
+    left = 0.02,
+    bottom = 0.6,
+    right = 0.55,
+    top = 0.99,
+    align_to = "full"
+  ) +theme(plot.margin = margin(t = 5, r = 0, b = 5, l = 5))
+
+
+final_plot <- (map_plot | right_plots) +
+  plot_layout(widths = c(1, 1)) 
+
+
+final_plot
+
+# ggsave(
+#   filename = "site_map_temp.png",
+#   plot = final_plot,
+#   dpi = 600,
+#   path = "03_graphics/01_maps/",
+#   width = 16,
+#   height = 14,
+#   units = "cm",
+#   bg = "white"
+# )
+
+# ggsave(filename = "site_map_nobg.png",
+#        plot = p_main_bw,
+#        dpi = 600,
+#        device = ragg::agg_png,
+#        path = "03_graphics/01_maps/",
+#        width = 9.5,
+#        height = 11,
+#        units = "cm",
+#        bg = "transparent"
+#        )
+
+
+
+```
+

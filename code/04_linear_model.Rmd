@@ -1,0 +1,943 @@
+---
+title: "18_linear_model_current"
+author: "Sarah Willington"
+date: "2026-03-19"
+output: html_document
+---
+Main analysis for Willington et al. 2026 otolith paper 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+
+```
+
+```{r}
+library(bbmle)
+library(tidyverse)
+library(here)
+library(patchwork)
+library(ggeffects) 
+library(tidylog)
+library(sdmTMB)
+library(modelr)
+```
+
+### scaling and setting up variables
+
+```{r scale variables}
+
+project_dir <- here::here()
+
+d <- read_csv(file.path(project_dir, "0_data", "02_cleaned_data", "otolith_analysis.csv"))
+
+d <- d |>
+  mutate(
+    FishID = as.factor(FishID),
+    cohort = as.factor(cohort),
+    species = as.factor(species),
+    species_cohort = as.factor(species_cohort),
+    species_site_cohort = as.factor(species_site_cohort), 
+    site_cohort = as.factor(site_cohort)
+  ) 
+
+d20 <- d |> 
+  filter(age<=20) |> 
+  mutate(age_rel = if_else(maximum_age > 20, age / 20, age / maximum_age),
+         age_sc = (age - mean(age)) / sd(age),
+         log_age_sc = (log_age - mean(log_age)) / sd(log_age),
+         log_increment_sc = (log_increment - mean(log_increment)) / sd(log_increment),
+         .by = species) |> 
+  mutate(log_age_rel = log(age_rel))
+
+d30 <- d |> 
+  filter(age<=30) |> 
+  mutate(age_rel = if_else(maximum_age > 30, age / 30, age / maximum_age),
+         age_sc = (age - mean(age)) / sd(age),
+         log_age_sc = (log_age - mean(log_age)) / sd(log_age),
+         log_increment_sc = (log_increment - mean(log_increment)) / sd(log_increment),
+         .by = species)|> 
+  mutate(log_age_rel = log(age_rel))
+
+dfull <- d |> 
+  mutate(age_rel = age/maximum_age,
+         age_sc = (age - mean(age)) / sd(age),
+         log_age_sc = (log_age - mean(log_age)) / sd(log_age),
+         log_increment_sc = (log_increment - mean(log_increment)) / sd(log_increment),
+         .by = species)|> 
+  mutate(log_age_rel = log(age_rel))
+
+```
+
+### fit models
+#### maximum age 20 yrs
+
+```{r test RE m20}
+
+#base model
+m20 <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (1 | species) + (1 | cohort),
+  spatial = "off",
+  data = d20, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+# random age slope per species - allowing species to have different growth ~ age relationship
+m20a <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (log_age_rel | species) + (1 | cohort),
+  spatial = "off",
+  data = d20, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+# cohort nested in species - fish will have a different cohort experience depending on species
+m22 <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (1 | species) + (1 | species_cohort),
+  spatial = "off",
+  data = d20, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+m22a <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (log_age_rel | species) + (1 | species_cohort),
+  spatial = "off",
+  data = d20, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+# cohort nested in site - fish will have a different cohort experience depending on where they are spatially
+m23 <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (1 | species) + (1 | site_cohort),
+  spatial = "off",
+  data = d20, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+m23a <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (log_age_rel | species) + (1 | site_cohort),
+  spatial = "off",
+  data = d20, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+# cohort nested in species in site - fish will have a different cohort experience depending on species and where they are spatially
+m24 <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (1 | species) + (1 | species_site_cohort),
+  spatial = "off",
+  data = d20, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+m24a <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (log_age_rel | species) + (1 | species_site_cohort),
+  spatial = "off",
+  data = d20, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+AICctab(m20, m20a, m22, m22a, m23, m23a, m24, m24a, base=TRUE, logLik=TRUE)
+AICctab(m20, m20a, base=TRUE, logLik=TRUE)
+AICctab(m20, m22,m23, m24, base=TRUE, logLik=TRUE)
+
+
+```
+
+
+```{r model checks m20}
+qqnorm(residuals(m23))
+qqline(residuals(m23))
+
+tidy(m23)
+sanity(m23)
+summary(m23)
+
+tidy(m23, effects = "ran_pars")
+
+t <- tidy(m23, effects = "fixed") |>
+  mutate(stat = estimate / std.error)
+
+# Plot residuals vs age
+d20$res <- residuals(m23)
+
+ggplot(d20, aes(log_age_rel, res)) +
+  geom_point() +
+  geom_hline(yintercept = 0, color = "tomato")+
+  ggtitle("max age 20")
+
+
+```
+
+#### maximum age 30 yrs
+
+```{r test RE m30}
+
+#base model
+m30 <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (1 | species) + (1 | cohort),
+  spatial = "off",
+  data = d30, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+# random age slope per species - allowing species to have different growth ~ age relationship
+m30a <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (log_age_rel | species) + (1 | cohort),
+  spatial = "off",
+  data = d30, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+# cohort nested in species - fish will have a different cohort experience depending on species
+m32 <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (1 | species) + (1 | species_cohort),
+  spatial = "off",
+  data = d30, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+m32a <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (log_age_rel | species) + (1 | species_cohort),
+  spatial = "off",
+  data = d30, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+# cohort nested in site - fish will have a different cohort experience depending on where they are spatially
+m33 <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (1 | species) + (1 | site_cohort),
+  spatial = "off",
+  data = d30, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+m33a <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (log_age_rel | species) + (1 | site_cohort),
+  spatial = "off",
+  data = d30, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+# cohort nested in species in site - fish will have a different cohort experience depending on species and where they are spatially
+m34 <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (1 | species) + (1 | species_site_cohort),
+  spatial = "off",
+  data = d30, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+m34a <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (log_age_rel | species) + (1 | species_site_cohort),
+  spatial = "off",
+  data = d30, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+AICctab(m30, m30a, m32, m32a, m33, m33a, m34, m34a, base=TRUE, logLik=TRUE)
+AICctab(m30, m30a, base=TRUE, logLik=TRUE)
+AICctab(m30, m32,m33, m34, base=TRUE, logLik=TRUE)
+
+```
+
+
+```{r model checks m30}
+qqnorm(residuals(m33))
+qqline(residuals(m33))
+
+tidy(m33)
+sanity(m33)
+summary(m33)
+
+tidy(m33, effects = "ran_pars")
+
+t30 <- tidy(m33, effects = "fixed") |>
+  mutate(stat = estimate / std.error)
+
+# Plot residuals vs age
+d30$res <- residuals(m33)
+
+ggplot(d30, aes(log_age_rel, res)) +
+  geom_point() +
+  geom_hline(yintercept = 0, color = "tomato")+
+  ggtitle("max age 30")
+
+ggplot(d20, aes(log_age_rel, res)) +
+  geom_point() +
+  geom_hline(yintercept = 0, color = "tomato")+
+  ggtitle("max age 20")
+
+mfull <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (1 | species) + (1 | site_cohort),
+  spatial = "off",
+  data = dfull, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+dfull$res <- residuals(mfull)
+
+ggplot(dfull, aes(log_age_rel, res)) +
+  geom_point() +
+  geom_hline(yintercept = 0, color = "tomato")+
+  ggtitle("full max age")
+```
+
+The residuals look best in the maximum age capped at 20 years data, but both 20 and 30 year capped maximum age look better than the full max age. 
+
+```{r residual plots}
+d20 <- d20 |> mutate(facet = "Maximum age 20 yrs")
+d30 <- d30 |> mutate(facet = "Maximum age 30 yrs")
+dfull <- dfull |> mutate(facet = "Full age range")
+
+res30plot <- ggplot(d30, aes(log_age_rel, res)) +
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_hline(yintercept = 0, color = "tomato",linewidth = 0.7)+
+  labs(x = "Relative age (log)", y = "Residuals")+
+  facet_wrap(~facet, strip.position = "right")+
+  theme_bw(base_size = 8)+
+  theme( panel.grid = element_blank(),
+    axis.title.x = element_text(size = 7),
+    axis.text.x = element_text(size = 6),
+    axis.text.y = element_text(size = 6),
+    axis.title.y = element_text(size = 7),
+    panel.border = element_rect(linewidth = 0.3),
+     strip.background = element_rect(fill = "white", colour = NA, linewidth = 0.3),
+    strip.text = element_text(size = 6, face = "plain"))
+
+res20plot <- ggplot(d20, aes(log_age_rel, res)) +
+  geom_point( size = 0.5, alpha = 0.5) +
+  geom_hline(yintercept = 0, color = "tomato",linewidth = 0.7)+
+  labs(x = "Relative age (log)", y = "Residuals")+
+   facet_wrap(~facet, strip.position = "right")+
+  theme_bw(base_size = 8)+
+  theme( panel.grid = element_blank(),
+    axis.title.x = element_text(size = 7),
+    axis.text.x = element_text(size = 6),
+    axis.text.y = element_text(size = 6),
+    axis.title.y = element_text(size = 7),
+    panel.border = element_rect(linewidth = 0.3),
+     strip.background = element_rect(fill = "white", colour = NA, linewidth = 0.3),
+    strip.text = element_text(size = 6, face = "plain"))
+
+
+resfullplot <- ggplot(dfull, aes(log_age_rel, res)) +
+  geom_point( size = 0.5, alpha = 0.5) +
+  geom_hline(yintercept = 0, color = "tomato",linewidth = 0.7)+
+  labs(x = "Relative age (log)", y = "Residuals")+
+   facet_wrap(~facet, strip.position = "right")+
+  theme_bw(base_size = 8)+
+  theme( panel.grid = element_blank(),
+    axis.title.x = element_text(size = 7),
+    axis.text.x = element_text(size = 6),
+    axis.text.y = element_text(size = 6),
+    axis.title.y = element_text(size = 7),
+    panel.border = element_rect(linewidth = 0.3),
+     strip.background = element_rect(fill = "white", colour = NA, linewidth = 0.3),
+    strip.text = element_text(size = 6, face = "plain"))
+
+resplots <- (res20plot/res30plot/resfullplot)+plot_layout(axis_titles = "collect")+
+  plot_annotation(tag_levels = "A")
+
+# ggsave(
+#  filename = "residuals.png",
+#  plot = resplots,
+#  dpi = 600,
+#  path = "03_graphics/",
+#  width = 8,
+#  height = 12,
+#  units = "cm")
+
+```
+
+### compare model coefficients
+
+```{r compare model coefs}
+coef_compare <- bind_rows(
+  tidy(m23, effects = "fixed") |> 
+    mutate(model = "Maximum age 20 yrs")) |> 
+  filter(!term %in% c("(Intercept)" , "log_age_rel")) |> 
+  mutate(term = case_when(
+                          term == "sst_space_sc" ~ "Spatial SST", 
+                          term == "sst_time_sc" ~ "Temporal SST", 
+                          term == "log_age_rel:sst_space_sc" ~ "Relative age x Spatial SST", 
+                          term == "log_age_rel:sst_time_sc" ~ "Relative age x Temporal SST", 
+                          term == "sst_space_sc:sst_time_sc" ~ "Spatial SST x Temporal SST", 
+                          term == "log_age_rel" ~ "Age")) |> 
+  mutate(term = factor(term, ordered = TRUE, levels = c("Spatial SST x Temporal SST",
+                                                        "Relative age x Temporal SST",
+                                                        "Temporal SST",
+                                                        "Relative age x Spatial SST",
+                                                        "Spatial SST","Age" )))
+
+cbPalette <- c("#56B4E9","#CC79A7", "#E69F00","grey30","#EED202", "#000000",
+                "#D55E00","#009E73", "#0072B2" )
+
+colorspace::swatchplot(cbPalette, cvd = TRUE)
+
+comp <- ggplot(coef_compare, aes(x = estimate, y = term)) +
+  geom_point(
+    size = 1.2) +
+  geom_errorbar(
+    aes(xmin = conf.low, xmax = conf.high),
+    width = 0.1,
+    linewidth = 0.3
+  ) +
+  geom_vline(xintercept = 0, linetype = 2, linewidth = 0.3, colour = "grey60") +
+  labs(
+    x = "Estimate",
+    y = NULL
+  ) +
+  theme_classic(base_size = 9) +
+  theme(
+    panel.grid = element_blank(),
+    axis.title.x = element_text(size = 6),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.ticks.y = element_blank()
+  )
+comp
+
+# ggsave(
+#  filename = "coeff_compare.png",
+#  plot = comp,
+#  dpi = 600,
+#  path = "03_graphics/",
+#  width = 8,
+#  height = 6,
+#  units = "cm")
+```
+
+### plot growth at age with different warming scenarios
+
+```{r plot how model predicts growth at age}
+nd_age <- expand_grid(
+  sst_space_sc = 0,
+  sst_time_sc = 0,
+  log_age_rel = seq(min(d20$log_age_rel), max(d20$log_age_rel), length.out = 50)
+) |>
+  mutate(
+    FishID = d$FishID[1],
+    species = d$species[1],
+    cohort = d$cohort[1]
+  )
+
+nd_age_pos <- expand_grid(
+  sst_space_sc = 0,
+  sst_time_sc = 2,
+  log_age_rel = seq(min(d20$log_age_rel), max(d20$log_age_rel), length.out = 50)
+) |>
+  mutate(
+    FishID = d$FishID[1],
+    species = d$species[1],
+    cohort = d$cohort[1]
+  )
+
+nd_age_neg <- expand_grid(
+  sst_space_sc = 0,
+  sst_time_sc = -2,
+  log_age_rel = seq(min(d20$log_age_rel), max(d20$log_age_rel), length.out = 50)
+) |>
+  mutate(
+    FishID = d$FishID[1],
+    species = d$species[1],
+    cohort = d$cohort[1]
+  )
+
+# predict again with linear model on this new data
+p_age <- predict(m23, newdata = nd_age, re_form_iid = NA, se_fit = TRUE)
+p_age_pos <- predict(m23, newdata = nd_age_pos, re_form_iid = NA, se_fit = TRUE)
+p_age_neg <- predict(m23, newdata = nd_age_neg, re_form_iid = NA, se_fit = TRUE)
+
+
+pplot <- ggplot(d20, aes(x = log_age_rel, y = log_increment_sc)) +
+  geom_point(alpha = 0.1, size = 0.7) +
+  geom_line(
+    data = p_age,
+    aes(x = log_age_rel, y = est, colour = "0"),
+    inherit.aes = FALSE,
+    linewidth = 0.7
+  ) +
+  geom_line(
+    data = p_age_pos,
+    aes(x = log_age_rel, y = est, colour = "+"),
+    inherit.aes = FALSE,
+    linewidth = 0.7
+  ) +
+  geom_line(
+    data = p_age_neg,
+    aes(x = log_age_rel, y = est, colour = "-"),
+    inherit.aes = FALSE,
+    linewidth = 0.7
+  ) +
+  scale_colour_manual(
+    values =c("0" = "grey35", "+" = "#D55E00", "-" = "#0072B2")
+  ) +
+  guides(colour = guide_legend(ncol = 3)) +
+  labs(x = "Relative age (log)", y = "Increment width (zscore)", colour = "SST")+
+  theme_bw(base_size = 8)+
+  theme( panel.grid = element_blank(),
+    legend.position = "bottom",
+    legend.title = element_text(hjust = 0.5, size = 6),
+    legend.text = element_text(hjust = 0, size = 7),
+    legend.key.height = unit(0.35, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    axis.title.x = element_text(size = 7),
+    axis.text.x = element_text(size = 6),
+    axis.text.y = element_text(size = 6),
+    axis.title.y = element_text(size = 7),
+    panel.border = element_rect(linewidth = 0.3))
+
+pplot
+
+# ggsave(
+#  filename = "modelled_growth_at_age.png",
+#  plot = pplot,
+#  dpi = 600,
+#  path = "03_graphics/",
+#  width = 8,
+#  height = 8,
+#  units = "cm")
+
+```
+
+### full model plots
+
+```{r full model}
+# plot full linear model with all interactions
+
+nd <- expand_grid(
+  sst_space_sc = c(
+    quantile(d20$sst_space_sc, probs = 0.1),
+    quantile(d20$sst_space_sc, probs = 0.9)
+  ),
+  sst_time_sc = modelr::seq_range(d20$sst_time_sc, n = 50),
+  log_age_rel = c(
+    quantile(d20$log_age_rel, probs = 0.1),
+    quantile(d20$log_age_rel, probs = 0.5),
+    quantile(d20$log_age_rel, probs = 0.9)
+  ),
+) |>
+  mutate(
+    FishID = d20$FishID[1],
+    species = d20$species[1],
+    cohort = d20$cohort[1]
+  )
+
+pred_m23 <- predict(
+  m23,
+  newdata = nd,
+  re_form_iid = NA,
+  se_fit = TRUE
+)
+
+pred_m23 <- pred_m23 |>
+  mutate(
+    age_group = factor(
+      round(log_age_rel, 2),
+      levels = sort(unique(round(log_age_rel, 2))),
+      labels = c("Youngest 10%", "Median age", "Oldest 10%")
+    ),
+    sst_space_lab = factor(
+      round(sst_space_sc, 1),
+      labels = c("Coldest 10%", "Warmest 10%")
+    )
+  )
+
+mean_sst_time <- mean(d20$sst_time, na.rm = TRUE)
+sd_sst_time   <- sd(d20$sst_time, na.rm = TRUE)
+
+pal <- c("steelblue","#B2182B")
+
+m23_plot <- ggplot(pred_m23,
+  aes(x = sst_time_sc,
+    y = est,
+    colour = sst_space_lab,
+    fill = sst_space_lab)) +
+  geom_ribbon(aes(
+      ymin = est - 1.96 * est_se,
+      ymax = est + 1.96 * est_se),
+    alpha = 0.18,
+    colour = NA) +
+  geom_line(linewidth = 0.6) +
+  facet_wrap(~ age_group, nrow = 1) +
+  scale_colour_manual(values = c("Coldest 10%" = "steelblue", "Warmest 10%" = "#B2182B")) +
+  scale_fill_manual(values = c("Coldest 10%" = "steelblue", "Warmest 10%" = "#B2182B")) +
+  guides(fill = "none",
+      colour = guide_legend(
+      ncol = 2,
+      title.position = "top",
+      title.hjust = 0.5)) +
+  labs(colour = "Mean site temperature",
+    x = expression("Temporal SST anomaly (" * degree * "C)"),
+    y = "Predicted increment width (zscore)") +
+  scale_x_continuous(
+    breaks = seq(-3, 3, by = 2),
+    labels = round( seq(-3, 3, by = 2) * sd_sst_time + mean_sst_time, 1)) +
+  theme_bw(base_size = 8) +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    legend.justification = "centre",
+    legend.box.just = "centre",
+    legend.title = element_text(size = 7, hjust = 0.5),
+    legend.text = element_text(size = 6),
+    legend.key.height = unit(0.35, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    axis.title = element_text(size = 7),
+    axis.text = element_text(size = 5),
+    axis.ticks = element_line(linewidth = 0.3),
+    panel.border = element_rect(linewidth = 0.4),
+    panel.spacing.x = unit(0.5, "lines"),
+    strip.background = element_rect(fill = "white", colour = NA, linewidth = 0.3),
+    strip.text = element_text(size = 6, face = "plain"),
+    axis.title.x = element_text(margin = margin(t = 6))
+  )
+
+m23_plot
+
+# ggsave(
+#  filename = "main_figure.png",
+#  plot = m23_plot,
+#  dpi = 600,
+#  path = "03_graphics/",
+#  width = 8,
+#  height = 7,
+#  units = "cm")
+
+pchange <- pred_m23 |>
+  group_by(log_age_rel, sst_space_lab) |>
+  summarise(
+    est_start = est[which.min(sst_time_sc)],
+    est_end   = est[which.max(sst_time_sc)],
+    change_est = est_end - est_start,
+    pct_change_from_start = ((est_end - est_start) / abs(est_start)) * 100,
+    .groups = "drop"
+  )
+
+```
+
+Temporal SST anomaly was standardised prior to modelling; axis labels are shown here in the original °C units for interpretability.
+
+```{r TSR plot}
+df <- d20 |> group_by(site) |> 
+  summarise(sst_space_sc = median(sst_space_sc))
+
+nd_tsr <-
+  expand_grid(
+    # sst_space_sc = 0,
+    sst_space_sc = c(-1, 0, 2),
+    sst_time_sc = modelr::seq_range(d20$sst_time_sc, n = 50),
+    log_age_rel = c(
+    quantile(d20$log_age_rel, probs = 0.1),
+    quantile(d20$log_age_rel, probs = 0.9)
+  ),
+  ) |>
+  mutate(
+    FishID = d20$FishID[1],
+    species = d20$species[1],
+    cohort = d20$cohort[1]
+  )
+
+
+
+pred_m23_tsr <- predict(
+  m23,
+  newdata = nd_tsr,
+ re_form_iid = NA,
+  se_fit = TRUE
+)
+
+
+age_vals <- sort(unique(round(pred_m23_tsr$log_age_rel, 2)))
+space_vals <- sort(unique(round(pred_m23_tsr$sst_space_sc, 2)))
+
+pred_m23_tsr <- pred_m23_tsr |>
+  mutate(
+    age_group = factor(
+      round(log_age_rel, 2),
+      levels = age_vals,
+      labels = c("Youngest 10%", "Oldest 10%")
+    ),
+    space_group = factor(
+      round(sst_space_sc, 2),
+      levels = space_vals,
+      labels = c("Cool sites", "Average sites", "Warm sites")
+    )
+  )
+
+mean_sst_time <- mean(d20$sst_time, na.rm = TRUE)
+sd_sst_time   <- sd(d20$sst_time, na.rm = TRUE)
+
+cbPalette <- c("#56B4E9","#CC79A7", "#E69F00","grey30","#EED202", "#000000",
+                "#D55E00","#009E73", "#0072B2" )
+colorspace::swatchplot(cbPalette, cvd = TRUE)
+
+tsr_plot <- ggplot(
+  pred_m24_tsr,
+  aes(
+    x = sst_time_sc,
+    y = est,
+    colour = age_group,
+    fill = age_group)) +
+  geom_ribbon(
+    aes(
+      ymin = est - 1.96 * est_se,
+      ymax = est + 1.96 * est_se),
+    alpha = 0.18,
+    colour = NA) +
+  geom_line(linewidth = 0.6) +
+  facet_wrap(~ space_group, nrow = 1) +
+  scale_colour_manual(
+    values = c(
+      "Youngest 10%" = cbPalette[3],
+      "Oldest 10%" = cbPalette[4])) +
+  scale_fill_manual(
+    values = c(
+      "Youngest 10%" = cbPalette[3],
+      "Oldest 10%" = cbPalette[4]) ) +
+  scale_x_continuous(
+    breaks = seq(-3, 3, by = 2),
+    labels = round( seq(-3, 3, by = 2) * sd_sst_time + mean_sst_time, 1)) +
+  guides(
+    fill = "none",
+    colour = guide_legend(
+      ncol = 2,
+      title.position = "top",
+      title.hjust = 0.5)) +
+  labs(
+    colour = "Relative age",
+    x = expression("Temporal SST anomaly (" * degree * "C)"),
+    y = "Predicted increment width (zscore)" ) +
+  theme_bw(base_size = 8) +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    legend.justification = "centre",
+    legend.box.just = "centre",
+    legend.title = element_text(size = 7, hjust = 0.5),
+    legend.text = element_text(size = 6),
+    legend.key.height = unit(0.35, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    axis.title = element_text(size = 7),
+    axis.text = element_text(size = 5),
+    axis.ticks = element_line(linewidth = 0.3),
+    panel.border = element_rect(linewidth = 0.4),
+    panel.spacing.x = unit(0.5, "lines"),
+    strip.background = element_rect(fill = "white", colour = NA, linewidth = 0.3),
+    strip.text = element_text(size = 6, face = "plain"),
+    axis.title.x = element_text(margin = margin(t = 6)))
+
+tsr_plot
+
+# ggsave(
+#  filename = "tsr_figure.png",
+#  plot = tsr_plot,
+#  dpi = 600,
+#  path = "03_graphics/",
+#  width = 8,
+#  height = 7,
+#  units = "cm")
+```
+
+
+```{r TSR plot map}
+
+pred_m23_tsr_v <- predict(
+  m23,
+  newdata = nd_tsr,
+ re_form_iid = NA,
+  se_fit = TRUE
+)
+
+age_vals <- sort(unique(round(pred_m23_tsr_v$log_age_rel, 2)))
+space_vals <- sort(unique(round(pred_m23_tsr_v$sst_space_sc, 2)))
+
+pred_m23_tsr_v <- pred_m23_tsr_v |>
+  mutate(
+    age_group = factor(
+      round(log_age_rel, 2),
+      levels = age_vals,
+      labels = c("Youngest 10%", "Oldest 10%")
+    ),
+    space_group = factor(
+      round(sst_space_sc, 2),
+      levels = space_vals,
+      labels = c("Cold sites" , "Average sites","Warm sites")
+    )
+  ) |> 
+  mutate(space_group = factor(space_group, ordered = TRUE, levels = c("Warm sites","Average sites","Cold sites" )))
+
+cool_base <- pred_m23_tsr_v |> 
+  filter(space_group == "Cold sites")
+
+cool_slopes <- bind_rows(
+  cool_base |>  mutate(space_group = "Average sites"),
+  cool_base |>  mutate(space_group = "Warm sites")) |> 
+  mutate(
+    space_group = factor(
+      space_group, ordered = TRUE,
+     levels = c("Warm sites","Average sites","Cold sites" )) )
+
+tsr_plot_v <- ggplot(
+  pred_m23_tsr_v,
+  aes(
+    x = sst_time_sc,
+    y = est,
+    colour = age_group,
+    fill = age_group)) +
+  geom_ribbon(
+    aes(
+      ymin = est - 1.96 * est_se,
+      ymax = est + 1.96 * est_se),
+    alpha = 0.18,
+    colour = NA) +
+  geom_line(linewidth = 0.6) +
+   geom_line(
+    data = cool_slopes,
+    aes(x = sst_time_sc, y = est, colour = age_group),
+    linetype = "dashed",
+    linewidth = 0.4,
+    alpha = 0.55,
+    inherit.aes = FALSE) +
+  facet_wrap(~ space_group, ncol = 1, strip.position = "right") +
+  scale_colour_manual(
+  values = c("Youngest 10%" = cbPalette[3], "Oldest 10%" = cbPalette[4])) +
+  scale_fill_manual(
+  values = c("Youngest 10%" = cbPalette[3], "Oldest 10%" = cbPalette[4]))+
+  scale_x_continuous(
+    breaks = seq(-3, 3, by = 2),
+    labels = round( seq(-3, 3, by = 2) * sd_sst_time + mean_sst_time, 1)) +
+  guides(
+    fill = "none",
+    colour = guide_legend(
+      ncol = 2,
+      title.position = "top",
+      title.hjust = 0.5) ) +
+  labs(
+    colour = "Relative age",
+    x = expression("Temporal SST anomaly (" * degree * "C)"),
+    y = "Predicted increment width (zscore)") +
+  theme_bw(base_size = 8) +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    legend.justification = "centre",
+    legend.box.just = "centre",
+    legend.title = element_text(size = 7, hjust = 0.5),
+    legend.text = element_text(size = 6),
+    legend.key.height = unit(0.35, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    axis.title = element_text(size = 7),
+    axis.text = element_text(size = 5),
+    axis.ticks = element_line(linewidth = 0.3),
+    panel.border = element_rect(linewidth = 0.4),
+    #panel.spacing.x = unit(0.5, "lines"),
+    panel.spacing.y = unit(0.35, "lines"),
+    strip.background = element_rect(fill = "white", colour = NA, linewidth = 0.3),
+    strip.text = element_text(size = 6, face = "plain"),
+    axis.title.x = element_text(margin = margin(t = 6)),
+    panel.background = element_rect(fill = NA, colour = NA),
+        plot.background  = element_rect(fill = NA, colour = NA)
+  )
+
+tsr_plot_v
+
+map_plot2 <- map_plot +
+  theme(plot.margin = margin(2, -2, 2, 2))
+
+tsr_plot_v <- tsr_plot_v +
+  theme(plot.margin = margin(2, 2, 2, -2))
+
+fig_side <- plot_grid(
+  map_plot2,
+  tsr_plot_v,
+  nrow = 1,
+  rel_widths = c(1.25, 0.75),
+  align = "h",
+  axis = "tb",
+  labels = c("A", "B"),
+  label_size = 10,
+  label_fontface = "plain",
+  label_x = c(0.02, 0.01),
+  label_y = c(0.98, 0.98),
+  hjust = 0,
+  vjust = 1
+)
+
+fig_side
+
+
+
+# ggsave(
+#   "map_tsr_side_by_side.png",
+#   fig_side,
+#   path = "03_graphics/",
+#   width = 8,
+#   height = 12,
+#   units = "cm",
+#   dpi = 600, 
+#   bg = "white"
+# )
+# 
+# ggsave(
+#   "tsr_plot.png",
+#   tsr_plot_v,
+#   path = "03_graphics/",
+#   device = ragg::agg_png,
+#   width = 3,
+#   height = 8,
+#   units = "cm",
+#   dpi = 600,
+#   bg = "transparent"
+# )
+
+```

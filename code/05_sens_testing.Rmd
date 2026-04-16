@@ -1,0 +1,982 @@
+---
+title: "sensitivity testing"
+author: "Sarah Willington"
+date: "2026-03-10"
+output: html_document
+---
+
+Sensitivity testing for Willington et al. 2026 otolith paper
+
+1. compare models with relative age to a maximum of 20 or 30 years
+
+2. Randomly removing species to test for a strong species effect
+
+3. Randomly remove ~ 20% of fish 
+
+4. Sequentially remove 1 species at a time and refit the model 
+
+5. Remove top 3 species by number of individuals 
+
+6. compare to a weighted model
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+
+```
+
+```{r load libraries}
+library(tidyverse)
+library(here)
+library(patchwork)
+library(effects) #fit and visualise the model
+library(ggeffects) #view partial effects
+library(tidylog)
+library(mgcv)
+library(sdmTMB)
+library(modelr)
+
+```
+
+## load data and scale variables
+
+```{r load data}
+
+project_dir <- here::here()
+
+d <- read_csv(file.path(project_dir, "0_data", "02_cleaned_data", "otolith_analysis.csv"))
+
+d <- d |>
+  mutate(
+    FishID = as.factor(FishID),
+    cohort = as.factor(cohort),
+    species = as.factor(species),
+    species_cohort = as.factor(species_cohort),
+    species_site_cohort = as.factor(species_site_cohort), 
+    site_cohort = as.factor(site_cohort)
+  ) 
+
+d20 <- d |> 
+  filter(age<=20) |> 
+  mutate(age_rel = if_else(maximum_age > 20, age / 20, age / maximum_age),
+         age_sc = (age - mean(age)) / sd(age),
+         log_age_sc = (log_age - mean(log_age)) / sd(log_age),
+         log_increment_sc = (log_increment - mean(log_increment)) / sd(log_increment),
+         .by = species) |> 
+  mutate(log_age_rel = log(age_rel))
+
+d30 <- d |> 
+  filter(age<=30) |> 
+  mutate(age_rel = if_else(maximum_age > 30, age / 30, age / maximum_age),
+         age_sc = (age - mean(age)) / sd(age),
+         log_age_sc = (log_age - mean(log_age)) / sd(log_age),
+         log_increment_sc = (log_increment - mean(log_increment)) / sd(log_increment),
+         .by = species)|> 
+  mutate(log_age_rel = log(age_rel))
+
+dfull <- d |> 
+  mutate(age_rel = age/maximum_age,
+         age_sc = (age - mean(age)) / sd(age),
+         log_age_sc = (log_age - mean(log_age)) / sd(log_age),
+         log_increment_sc = (log_increment - mean(log_increment)) / sd(log_increment),
+         .by = species)|> 
+  mutate(log_age_rel = log(age_rel))
+
+```
+
+## 1. fit full models
+
+Compare models with age relative to a maximum of 20 years and age relative to a maximum of 30 years
+
+
+```{r compare full models}
+m23 <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (1 | species) + (1 | site_cohort),
+  spatial = "off",
+  data = d20, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+m33 <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (1 | species) + (1 | site_cohort),
+  spatial = "off",
+  data = d30, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+
+coef_compare <- bind_rows(
+  tidy(m23, effects = "fixed") |> 
+    mutate(model = "Maximum age 20 yrs"),
+  tidy(m33, effects = "fixed") |> 
+    mutate(model = "Maximum age 30 yrs")) |> 
+  filter(!term %in% c("(Intercept)", "log_age_rel"))|> 
+  mutate(term = case_when(
+                          term == "sst_space_sc" ~ "Spatial SST", 
+                          term == "sst_time_sc" ~ "Temporal SST", 
+                          term == "log_age_rel:sst_space_sc" ~ "Relative age x Spatial SST", 
+                          term == "log_age_rel:sst_time_sc" ~ "Relative age x Temporal SST", 
+                          term == "sst_space_sc:sst_time_sc" ~ "Spatial SST x Temporal SST")) |> 
+  mutate(term = factor(term, ordered = TRUE, levels = c("Spatial SST x Temporal SST",
+                                                        "Relative age x Temporal SST",
+                                                        "Temporal SST",
+                                                        "Relative age x Spatial SST",
+                                                        "Spatial SST" )),
+         model = factor(model, ordered = TRUE, levels = c("Maximum age 20 yrs", "Maximum age 30 yrs")))
+
+cbPalette <- c("#56B4E9","#CC79A7", "#E69F00","grey30","#EED202", "#000000",
+                "#D55E00","#009E73", "#0072B2" )
+
+comp <- ggplot(coef_compare, aes(x = estimate, y = term, colour = model)) +
+   geom_vline(xintercept = 0, linetype = 2, linewidth = 0.3, colour = "grey60") +
+  geom_point(
+    position = position_dodge(width = 0.45, reverse = TRUE),
+    size = 1
+  ) +
+  geom_errorbar(
+    aes(xmin = conf.low, xmax = conf.high),
+    position = position_dodge(width = 0.45, reverse = TRUE),
+    width = 0.16,
+    linewidth = 0.3
+  ) +
+  scale_color_manual(values = c(cbPalette[1], cbPalette[2])) +
+  guides(colour = guide_legend(ncol = 2)) +
+  labs(
+    x = "Estimate",
+    y = NULL,
+    colour = "Model"
+  ) +
+  theme_classic(base_size = 9) +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    legend.justification = "left",
+    legend.box.just = "left",
+    legend.title = element_blank(),
+    legend.text = element_text(hjust = 0, size = 5),
+    legend.key.height = unit(0.35, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    axis.title.x = element_text(size = 6),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.ticks.y = element_blank())
+comp
+
+ ggsave(
+  filename = "fullmodel_compare.png",
+  plot = comp,
+  dpi = 600,
+  path = "02_pipeline/02_sens_testing/final_plots",
+  width = 8,
+  height = 6,
+  units = "cm")
+```
+
+## 2. randomly remove species
+
+Test out the species effect by randomly sampling the data to remove 3 or 6 species and refit the model
+
+```{r remove 3 species}
+set.seed(124)
+
+collapse_removed <- function(x) paste(sort(unique(x)), collapse = "; ")
+
+random_species_removal <- function(df, dataset_name, n_remove, n_draws = 50) {
+  
+  map_dfr(seq_len(n_draws), function(i) {
+    
+    # 1) sample species to remove
+    species_to_remove <- df %>%
+      distinct(species_id, species) %>%
+      slice_sample(n = n_remove)
+    
+    # 2) remove them
+    df_removed <- df %>%
+      anti_join(species_to_remove, by = c("species_id", "species"))
+    
+    # 3) store removal info
+    removed_ids   <- collapse_removed(species_to_remove$species_id)
+    removed_names <- collapse_removed(species_to_remove$species)
+    
+    # 4) fit model
+    fit <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (1 | species) + (1 | site_cohort),
+  spatial = "off",
+  data = df_removed, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+    
+    # 5) tidy coefs + add metadata
+    tidy(fit) %>%
+      mutate(
+        draw = i,
+        n_removed = n_remove,
+        df = dataset_name,
+        group = paste(dataset_name, paste0(n_remove, " species"), sep = " - "),
+        removed_species_id = removed_ids,
+        removed_species = removed_names
+      )
+  })
+}
+
+results_all <- bind_rows(
+  random_species_removal(df = d20, dataset_name = "Max 20", n_remove = 3, n_draws = 50),
+  random_species_removal(df = d20, dataset_name = "Max 20", n_remove = 6, n_draws = 50),
+  random_species_removal(df = d30, dataset_name = "Max 30", n_remove = 3, n_draws = 50),
+  random_species_removal(df = d30, dataset_name = "Max 30", n_remove = 6, n_draws = 50)
+)
+
+
+
+coef_df <- results_all |> 
+  filter(!term %in% c("(Intercept)", "log_age_rel"))|> 
+  mutate(term = case_when(
+                          term == "sst_space_sc" ~ "Spatial SST", 
+                          term == "sst_time_sc" ~ "Temporal SST", 
+                          term == "log_age_rel:sst_space_sc" ~ "Relative age x Spatial SST", 
+                          term == "log_age_rel:sst_time_sc" ~ "Relative age x Temporal SST", 
+                          term == "sst_space_sc:sst_time_sc" ~ "Spatial SST x Temporal SST")) |> 
+  mutate(term = factor(term, ordered = TRUE, levels = c("Spatial SST x Temporal SST",
+                                                        "Relative age x Temporal SST",
+                                                        "Temporal SST",
+                                                        "Relative age x Spatial SST",
+                                                        "Spatial SST" )),
+         group = factor(group, ordered = TRUE, levels = c("Max 30 - 6 species",
+                                                          "Max 30 - 3 species",
+                                                          "Max 20 - 6 species",
+                                                          "Max 20 - 3 species")),
+          dataset = factor(df, ordered = TRUE, levels = c("Max 20", "Max 30")),
+          removal = factor(n_removed, ordered = TRUE, levels = c(3, 6),
+                           labels = c("3 species", "6 species")))
+
+#write_csv(coef_df, "02_pipeline/02_sens_testing/final_plots/random_species_coeffs.csv")
+
+  
+cbPalette <- c("#56B4E9","#CC79A7", "#E69F00","#EED202", "#000000",
+                "#D55E00","#009E73", "#0072B2", "grey30")
+colorspace::swatchplot(cbPalette, cvd = TRUE)
+
+ran_sp <- ggplot(coef_df, aes(x = estimate, y = term, fill = group)) +
+   geom_vline(xintercept = 0, linetype = 2, linewidth = 0.3, colour = "grey60") +
+  geom_boxplot(position = position_dodge(width = 0.8), 
+               width = 0.6, 
+               linewidth = 0.1, 
+               outlier.size = 0.02) +
+ scale_fill_manual(
+    values = c(
+      "Max 20 - 3 species" = cbPalette[1],
+      "Max 20 - 6 species" = cbPalette[3],
+      "Max 30 - 3 species" = cbPalette[2],
+      "Max 30 - 6 species" = cbPalette[4]),
+    guide = guide_legend(reverse = TRUE, nrow = 2, byrow = TRUE))+
+  labs(
+    x = "Estimate",
+    y = NULL, 
+    fill = NULL) +
+  theme_classic(base_size = 9) +
+  theme(
+    legend.position = "bottom",
+    legend.justification = "left",
+    legend.box.just = "left",
+    legend.title = element_blank(),
+    legend.text = element_text(hjust = 0, size = 5),
+    legend.key.height = unit(0.35, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    axis.title.x = element_text(size = 6),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.ticks.y = element_blank())
+
+ran_sp
+
+
+ggsave(
+  filename = "species_removed.png",
+  plot = ran_sp,
+  dpi = 600,
+  path = "02_pipeline/02_sens_testing/final_plots",
+  width = 8,
+  height = 8,
+  units = "cm")
+
+
+
+```
+
+## 3. randomly remove fish 
+
+randomly remove n fish from the data and refit the model 
+
+
+```{r random sample}
+
+set.seed(124)
+
+nfish <- d |> 
+    distinct(FishID) # ~20% of 722 = 144
+
+collapse_removed <- function(x) paste(sort(unique(x)), collapse = "; ")
+
+random_fish_removal <- function(df, dataset_name, n_remove, n_draws = 50) {
+  
+  map_dfr(seq_len(n_draws), function(i) {
+    
+    # 1) sample 100 FishID to remove (unique IDs)
+  fish_to_remove <- df |> 
+    distinct(FishID) |> 
+    slice_sample(n = n_remove )  
+
+  # 2) remove them 
+  df_removed <- df |> 
+    anti_join(fish_to_remove, by = "FishID")
+
+  removed_fish <- collapse_removed(fish_to_remove$FishID)
+    
+    # 4) fit model
+    fit <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (1 | species) + (1 | site_cohort),
+  spatial = "off",
+  data = df_removed, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+    
+    # 5) tidy coefs + add metadata
+    tidy(fit) %>%
+      mutate(
+        draw = i,
+        n_removed = n_remove,
+        df = dataset_name,
+        group = paste(dataset_name, paste0(n_remove, " fish"), sep = " - "),
+        removed_FishID = removed_fish
+      )
+  })
+}
+
+results_all_fish <- bind_rows(
+  random_fish_removal(df = d20, dataset_name = "Max 20", n_remove = 144, n_draws = 50),
+  random_fish_removal(df = d30, dataset_name = "Max 30", n_remove = 144, n_draws = 50)
+)
+
+
+coef_df_fish <- results_all_fish |> 
+  filter(!term %in% c("(Intercept)", "log_age_rel"))|> 
+  mutate(term = case_when(
+                          term == "sst_space_sc" ~ "Spatial SST", 
+                          term == "sst_time_sc" ~ "Temporal SST", 
+                          term == "log_age_rel:sst_space_sc" ~ "Relative age x Spatial SST", 
+                          term == "log_age_rel:sst_time_sc" ~ "Relative age x Temporal SST", 
+                          term == "sst_space_sc:sst_time_sc" ~ "Spatial SST x Temporal SST")) |> 
+  mutate(term = factor(term, ordered = TRUE, levels = c("Spatial SST x Temporal SST",
+                                                        "Relative age x Temporal SST",
+                                                        "Temporal SST",
+                                                        "Relative age x Spatial SST",
+                                                        "Spatial SST" )),
+          dataset = factor(df, ordered = TRUE, levels = c("Max 20", "Max 30"), 
+                           labels = c("Maximum age 30 yrs", "Maximum age 20 yrs")))
+
+#write_csv(coef_df_fish, "02_pipeline/02_sens_testing/final_plots/random_fish_coeffs.csv")
+
+  
+cbPalette <- c("#56B4E9","#CC79A7", "#E69F00","#EED202", "#000000",
+                "#D55E00","#009E73", "#0072B2", "grey30")
+colorspace::swatchplot(cbPalette, cvd = TRUE)
+
+ran_fish <- ggplot(coef_df_fish, aes(x = estimate, y = term, fill = dataset)) +
+   geom_vline(xintercept = 0, linetype = 2, linewidth = 0.3, colour = "grey60") +
+  geom_boxplot(position = position_dodge(width = 0.8), 
+               width = 0.5, 
+               linewidth = 0.1, 
+               outlier.size = 0.02) +
+ scale_fill_manual(
+    values = c(
+     cbPalette[2],
+     cbPalette[1]),
+    guide = guide_legend(reverse = TRUE))+
+  labs(
+    x = "Estimate",
+    y = NULL, 
+    fill = NULL) +
+  theme_classic(base_size = 9) +
+  theme(
+    legend.position = "bottom",
+    legend.justification = "left",
+    legend.box.just = "left",
+    legend.title = element_blank(),
+    legend.text = element_text(hjust = 0, size = 5),
+    legend.key.height = unit(0.35, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    axis.title.x = element_text(size = 6),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.ticks.y = element_blank())
+
+ran_fish
+
+
+ggsave(
+  filename = "fish_removed.png",
+  plot = ran_fish,
+  dpi = 600,
+  path = "02_pipeline/02_sens_testing/final_plots",
+  width = 8,
+  height = 6,
+  units = "cm")
+
+```
+
+## 4. remove 1 species 
+
+Sequentially remove 1 species at a time to see if any one species has a large influence
+
+```{r sequentially remove species}
+
+systematic_species_removal <- function(df, dataset_name) {
+  
+  species_list <- df %>%
+    distinct(species_id, species) %>%
+    arrange(species_id)
+  
+  map_dfr(seq_len(nrow(species_list)), function(i) {
+    
+    # 1) choose species to remove
+    species_to_remove <- species_list[i, ]
+    
+    # 2) remove it
+    df_removed <- df %>%
+      anti_join(species_to_remove, by = c("species_id", "species"))
+    
+    
+    # 4) fit model
+     fit <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (1 | species) + (1 | site_cohort),
+  spatial = "off",
+  data = df_removed, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+    
+    # 5) tidy coefficients + metadata
+    tidy(fit) %>%
+      mutate(
+        draw = i,
+        dataset = dataset_name,
+        removed_species_id = species_to_remove$species_id,
+      removed_species = species_to_remove$species
+      )
+  })
+}
+
+results_all_sys <- bind_rows(
+  systematic_species_removal(df = d20, dataset_name = "Max 20"),
+  systematic_species_removal(df = d30, dataset_name = "Max 30")
+)
+
+coef_df_sys <- results_all_sys |> 
+  filter(!term %in% c("(Intercept)", "log_age_rel"))|> 
+  mutate(term = case_when(
+                          term == "sst_space_sc" ~ "Spatial SST", 
+                          term == "sst_time_sc" ~ "Temporal SST", 
+                          term == "log_age_rel:sst_space_sc" ~ "Relative age x Spatial SST", 
+                          term == "log_age_rel:sst_time_sc" ~ "Relative age x Temporal SST", 
+                          term == "sst_space_sc:sst_time_sc" ~ "Spatial SST x Temporal SST")) |> 
+  mutate(term = factor(term, ordered = TRUE, levels = c("Spatial SST x Temporal SST",
+                                                        "Relative age x Temporal SST",
+                                                        "Temporal SST",
+                                                        "Relative age x Spatial SST",
+                                                        "Spatial SST" )),
+          dataset = factor(dataset, ordered = TRUE, levels = c("Max 20", "Max 30"), 
+                           labels = c("Maximum age 30 yrs", "Maximum age 20 yrs")))
+
+#write_csv(coef_df_sys, "02_pipeline/02_sens_testing/final_plots/sys_species_coeffs.csv")
+
+  
+cbPalette <- c("#56B4E9","#CC79A7", "#E69F00","#EED202", "#000000",
+                "#D55E00","#009E73", "#0072B2", "grey30")
+colorspace::swatchplot(cbPalette, cvd = TRUE)
+
+sys_sp <- ggplot(coef_df_sys, aes(x = estimate, y = term, fill = dataset)) +
+   geom_vline(xintercept = 0, linetype = 2, linewidth = 0.3, colour = "grey60") +
+  geom_boxplot(position = position_dodge(width = 0.8), 
+               width = 0.5, 
+               linewidth = 0.1, 
+               outlier.size = 0.02) +
+ scale_fill_manual(
+    values = c(
+     cbPalette[2],
+     cbPalette[1]),
+    guide = guide_legend(reverse = TRUE))+
+  labs(
+    x = "Estimate",
+    y = NULL, 
+    fill = NULL) +
+  theme_classic(base_size = 9) +
+  theme(
+    legend.position = "bottom",
+    legend.justification = "left",
+    legend.box.just = "left",
+    legend.title = element_blank(),
+    legend.text = element_text(hjust = 0, size = 5),
+    legend.key.height = unit(0.35, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    axis.title.x = element_text(size = 5),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 3.5),
+    axis.ticks.y = element_blank())
+
+sys_sp
+
+
+ggsave(
+  filename = "sys_species_removed.png",
+  plot = sys_sp,
+  dpi = 600,
+  path = "02_pipeline/02_sens_testing/final_plots",
+  width = 8,
+  height = 6,
+  units = "cm")
+```
+
+## 5. remove big 3 species 
+
+ remove the 3 species with the most individuals 
+ 
+```{r}
+
+species_remove <- d %>%
+  filter(species_id =="CSP"| species_id == "NFU" | species_id == "PBA") |> 
+  distinct(species_id, species) %>%
+  arrange(species_id)
+
+  d20_removed <- d20 %>%
+    anti_join(species_remove, by = c("species_id", "species"))
+  d30_removed <- d30 %>%
+    anti_join(species_remove, by = c("species_id", "species"))
+  
+removed_20 <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (1 | species) + (1 | site_cohort),
+  spatial = "off",
+  data = d20_removed, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+removed_30 <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (1 | species) + (1 | site_cohort),
+  spatial = "off",
+  data = d30_removed, 
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+
+coef_compare_b3 <- bind_rows(
+  tidy(m23, effects = "fixed") |> 
+    mutate(model = "Max 20 - all species"),
+  tidy(removed_20, effects = "fixed") |> 
+    mutate(model = "Max 20 - 3 species removed"),
+  tidy(m33, effects = "fixed") |> 
+    mutate(model = "Max 30 - all species"),
+  tidy(removed_30, effects = "fixed") |> 
+    mutate(model = "Max 30 - 3 species removed")) |> 
+  filter(!term %in% c("(Intercept)", "log_age_rel"))|> 
+  mutate(term = case_when(
+                          term == "sst_space_sc" ~ "Spatial SST", 
+                          term == "sst_time_sc" ~ "Temporal SST", 
+                          term == "log_age_rel:sst_space_sc" ~ "Relative age x Spatial SST", 
+                          term == "log_age_rel:sst_time_sc" ~ "Relative age x Temporal SST", 
+                          term == "sst_space_sc:sst_time_sc" ~ "Spatial SST x Temporal SST")) |> 
+  mutate(term = factor(term, ordered = TRUE, levels = c("Spatial SST x Temporal SST",
+                                                        "Relative age x Temporal SST",
+                                                        "Temporal SST",
+                                                        "Relative age x Spatial SST",
+                                                        "Spatial SST" )),
+         model = factor(model, ordered = TRUE, levels = c("Max 20 - all species", 
+                                                          "Max 20 - 3 species removed",
+                                                          "Max 30 - all species",
+                                                          "Max 30 - 3 species removed")))
+
+
+cbPalette <- c("#56B4E9","#CC79A7", "#E69F00","#EED202", "#000000",
+                "#D55E00","#009E73", "#0072B2", "grey30")
+
+b3_plot <- ggplot(coef_compare_b3, aes(x = estimate, y = term, colour = model)) +
+   geom_vline(xintercept = 0, linetype = 2, linewidth = 0.3, colour = "grey60") +
+  geom_point(
+    position = position_dodge(width = 0.45, reverse = TRUE),
+    size = 0.8
+  ) +
+  geom_errorbar(
+    aes(xmin = conf.low, xmax = conf.high),
+    position = position_dodge(width = 0.45, reverse = TRUE),
+    width = 0.16,
+    linewidth = 0.25
+  ) +
+  scale_color_manual( values = c(
+      "Max 20 - all species" = cbPalette[1],
+      "Max 20 - 3 species removed" = cbPalette[3],
+      "Max 30 - all species" = cbPalette[2],
+      "Max 30 - 3 species removed" = cbPalette[4]),
+    guide = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(
+    x = "Estimate",
+    y = NULL,
+    colour = "Model"
+  ) +
+  theme_classic(base_size = 9) +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    legend.justification = "left",
+    legend.box.just = "left",
+    legend.title = element_blank(),
+    legend.text = element_text(hjust = 0, size = 5),
+    legend.key.height = unit(0.35, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    axis.title.x = element_text(size = 6),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.ticks.y = element_blank())
+
+ggsave(
+  filename = "big3.png",
+  plot = b3_plot,
+  dpi = 600,
+  path = "02_pipeline/02_sens_testing/final_plots",
+  width = 8,
+  height = 8,
+  units = "cm")
+
+
+```
+
+## 6. weigthed model
+
+weight the model by the inverse of the number of individuals per species
+
+```{r weighted model}
+
+d20_w <- d20 |> 
+  group_by(species) |> 
+  mutate(
+    n_fish_species = n_distinct(FishID),
+    weight_fish = 1 / n_fish_species) |> 
+  ungroup() |> 
+  mutate(
+    weight_fish = weight_fish / mean(weight_fish))
+
+d30_w <- d30 |> 
+  group_by(species) |> 
+  mutate(
+    n_fish_species = n_distinct(FishID),
+    weight_fish = 1 / n_fish_species) |> 
+  ungroup() |> 
+  mutate(
+    weight_fish = weight_fish / mean(weight_fish))
+
+
+m23_weighted <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (1 | species) + (1 | site_cohort),
+  spatial = "off",
+  data = d20_w,
+  weights = d20_w$weight_fish,
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+m33_weighted <- sdmTMB(
+  log_increment_sc ~ log_age_rel * sst_space_sc + 
+    log_age_rel * sst_time_sc + 
+    sst_space_sc * sst_time_sc +
+    (1 | FishID) + (1 | species) + (1 | site_cohort),
+  spatial = "off",
+  data = d30_w,
+  weights = d30_w$weight_fish,
+  family = student(link = "identity", df = NULL), 
+  reml = TRUE)
+
+
+coef_compare_weight <- bind_rows(
+  tidy(m23, effects = "fixed") |> 
+    mutate(model = "Max 20 unweighted"),
+  tidy(m23_weighted, effects = "fixed") |> 
+    mutate(model = "Max 20 weighted"),
+  tidy(m33, effects = "fixed") |> 
+    mutate(model = "Max 30 unweighted"),
+  tidy(m33_weighted, effects = "fixed") |> 
+    mutate(model = "Max 30 weighted")) |> 
+  filter(!term %in% c("(Intercept)", "log_age_rel"))|> 
+  mutate(term = case_when(
+                          term == "sst_space_sc" ~ "Spatial SST", 
+                          term == "sst_time_sc" ~ "Temporal SST", 
+                          term == "log_age_rel:sst_space_sc" ~ "Relative age x Spatial SST", 
+                          term == "log_age_rel:sst_time_sc" ~ "Relative age x Temporal SST", 
+                          term == "sst_space_sc:sst_time_sc" ~ "Spatial SST x Temporal SST")) |> 
+  mutate(term = factor(term, ordered = TRUE, levels = c("Spatial SST x Temporal SST",
+                                                        "Relative age x Temporal SST",
+                                                        "Temporal SST",
+                                                        "Relative age x Spatial SST",
+                                                        "Spatial SST" )),
+         model = factor(model, ordered = TRUE, levels = c("Max 20 unweighted", 
+                                                          "Max 20 weighted",
+                                                          "Max 30 unweighted",
+                                                          "Max 30 weighted")))
+
+
+cbPalette <- c("#56B4E9","#CC79A7", "#E69F00","#EED202", "#000000",
+                "#D55E00","#009E73", "#0072B2", "grey30")
+
+weighted_plot <- ggplot(coef_compare_weight, aes(x = estimate, y = term, colour = model)) +
+   geom_vline(xintercept = 0, linetype = 2, linewidth = 0.3, colour = "grey60") +
+  geom_point(
+    position = position_dodge(width = 0.55, reverse = TRUE),
+    size = 0.8
+  ) +
+  geom_errorbar(
+    aes(xmin = conf.low, xmax = conf.high),
+    position = position_dodge(width = 0.55, reverse = TRUE),
+    width = 0.16,
+    linewidth = 0.25
+  ) +
+  scale_color_manual( values = c(
+      "Max 20 unweighted" = cbPalette[1],
+      "Max 20 weighted" = cbPalette[3],
+      "Max 30 unweighted" = cbPalette[2],
+      "Max 30 weighted" = cbPalette[4]),
+    guide = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(
+    x = "Estimate",
+    y = NULL,
+    colour = "Model"
+  ) +
+  theme_classic(base_size = 9) +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    legend.justification = "left",
+    legend.box.just = "left",
+    legend.title = element_blank(),
+    legend.text = element_text(hjust = 0, size = 5),
+    legend.key.height = unit(0.35, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    axis.title.x = element_text(size = 6),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.ticks.y = element_blank())
+
+weighted_plot
+
+
+ggsave(
+  filename = "weighted.png",
+  plot = weighted_plot,
+  dpi = 600,
+  path = "02_pipeline/02_sens_testing/final_plots",
+  width = 8,
+  height = 8,
+  units = "cm")
+
+
+```
+
+```{r 3 way comparison}
+coef_compare_weight2 <- bind_rows(
+  tidy(m23, effects = "fixed") |> 
+    mutate(model = "Max 20 unweighted"),
+  tidy(m23_weighted, effects = "fixed") |> 
+    mutate(model = "Max 20 weighted"),
+  tidy(m33, effects = "fixed") |> 
+    mutate(model = "Max 30 unweighted"),
+  tidy(m33_weighted, effects = "fixed") |> 
+    mutate(model = "Max 30 weighted"),
+  tidy(removed_20, effects = "fixed") |> 
+    mutate(model = "Max 20 - 3 species"),
+  tidy(removed_30, effects = "fixed") |> 
+    mutate(model = "Max 30 - 3 species")) |> 
+  filter(!term %in% c("(Intercept)", "log_age_rel"))|> 
+  mutate(term = case_when(
+                          term == "sst_space_sc" ~ "Spatial SST", 
+                          term == "sst_time_sc" ~ "Temporal SST", 
+                          term == "log_age_rel:sst_space_sc" ~ "Relative age x Spatial SST", 
+                          term == "log_age_rel:sst_time_sc" ~ "Relative age x Temporal SST", 
+                          term == "sst_space_sc:sst_time_sc" ~ "Spatial SST x Temporal SST")) |> 
+  mutate(term = factor(term, ordered = TRUE, levels = c("Spatial SST x Temporal SST",
+                                                        "Relative age x Temporal SST",
+                                                        "Temporal SST",
+                                                        "Relative age x Spatial SST",
+                                                        "Spatial SST" )),
+         model = factor(model, ordered = TRUE, levels = c("Max 20 unweighted", 
+                                                          "Max 20 weighted",
+                                                          "Max 20 - 3 species",
+                                                          "Max 30 unweighted",
+                                                          "Max 30 weighted",
+                                                          "Max 30 - 3 species")))
+
+
+cbPalette <- c("#56B4E9","#CC79A7", "#E69F00","#EED202", "#000000",
+                "#D55E00","#009E73", "#0072B2", "grey30")
+
+weighted_plot2 <- ggplot(coef_compare_weight2, aes(x = estimate, y = term, colour = model)) +
+   geom_vline(xintercept = 0, linetype = 2, linewidth = 0.3, colour = "grey60") +
+  geom_point(
+    position = position_dodge(width = 0.7, reverse = TRUE),
+    size = 0.8
+  ) +
+  geom_errorbar(
+    aes(xmin = conf.low, xmax = conf.high),
+    position = position_dodge(width = 0.7, reverse = TRUE),
+    width = 0.16,
+    linewidth = 0.2
+  ) +
+  scale_color_manual( values = c(
+      "Max 20 unweighted" = cbPalette[1],
+      "Max 20 weighted" = cbPalette[3],
+      "Max 20 - 3 species" = cbPalette[6],
+      "Max 30 unweighted" = cbPalette[2],
+      "Max 30 weighted" = cbPalette[4],
+      "Max 30 - 3 species" = cbPalette[7]),
+    guide = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(
+    x = "Estimate",
+    y = NULL,
+    colour = "Model"
+  ) +
+  theme_classic(base_size = 9) +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    legend.justification = "left",
+    legend.box.just = "left",
+    legend.title = element_blank(),
+    legend.text = element_text(hjust = 0, size = 3),
+    legend.key.height = unit(0.35, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    axis.title.x = element_text(size = 6),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.ticks.y = element_blank())
+
+weighted_plot2
+
+
+ggsave(
+  filename = "weighted2.png",
+  plot = weighted_plot2,
+  dpi = 600,
+  path = "02_pipeline/02_sens_testing/final_plots",
+  width = 8,
+  height = 8,
+  units = "cm")
+```
+
+```{r 3 way comp shapes}
+coef_compare_weight3 <- bind_rows(
+  tidy(m23, effects = "fixed") |> 
+    mutate(model = "Maximum age 20 yrs", 
+           test = "Unweighted"),
+  tidy(m23_weighted, effects = "fixed") |> 
+    mutate(model = "Maximum age 20 yrs", 
+           test = "Weighted"),
+  tidy(m33, effects = "fixed") |> 
+    mutate(model = "Maximum age 30 yrs", 
+           test = "Unweighted"),
+  tidy(m33_weighted, effects = "fixed") |> 
+    mutate(model = "Maximum age 30 yrs", 
+           test = "Weighted"),
+  tidy(removed_20, effects = "fixed") |> 
+    mutate(model = "Maximum age 20 yrs", 
+           test = "3 species removed"),
+  tidy(removed_30, effects = "fixed") |> 
+    mutate(model = "Maximum age 30 yrs", 
+           test = "3 species removed")) |> 
+  filter(!term %in% c("(Intercept)", "log_age_rel"))|> 
+  mutate(term = case_when(
+                          term == "sst_space_sc" ~ "Spatial SST", 
+                          term == "sst_time_sc" ~ "Temporal SST", 
+                          term == "log_age_rel:sst_space_sc" ~ "Relative age x Spatial SST", 
+                          term == "log_age_rel:sst_time_sc" ~ "Relative age x Temporal SST", 
+                          term == "sst_space_sc:sst_time_sc" ~ "Spatial SST x Temporal SST")) |> 
+  mutate(term = factor(term, ordered = TRUE, levels = c("Spatial SST x Temporal SST",
+                                                        "Relative age x Temporal SST",
+                                                        "Temporal SST",
+                                                        "Relative age x Spatial SST",
+                                                        "Spatial SST" )),
+         model = factor(model, ordered = TRUE, levels = c("Maximum age 20 yrs", 
+                                                          "Maximum age 30 yrs")), 
+         test = factor(test, ordered = TRUE, levels = c("Unweighted", "Weighted", "3 species removed")))
+
+
+cbPalette <- c("#56B4E9","#CC79A7", "#E69F00","#EED202", "#000000",
+                "#D55E00","#009E73", "#0072B2", "grey30")
+
+weighted_plot3 <- ggplot(coef_compare_weight3, 
+                         aes(x = estimate, y = term, colour = model, shape = test)) +
+   geom_vline(xintercept = 0, linetype = 2, linewidth = 0.3, colour = "grey60") +
+  geom_point(
+    position = position_dodge(width = 0.7, reverse = TRUE),
+    size = 0.8
+  ) +
+  geom_errorbar(
+    aes(xmin = conf.low, xmax = conf.high),
+    position = position_dodge(width = 0.7, reverse = TRUE),
+    width = 0.4,
+    linewidth = 0.2
+  ) +
+  scale_color_manual( values = c(
+      "Maximum age 20 yrs" = cbPalette[1],
+     "Maximum age 30 yrs"= cbPalette[2]),
+    guide = guide_legend(ncol = 1, byrow = TRUE)) +
+  labs(
+    x = "Estimate",
+    y = NULL,
+    colour = "Model"
+  ) +
+  theme_classic(base_size = 9) +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+  legend.box = "vertical",
+  legend.justification = "left",
+  legend.box.just = "left",
+  legend.spacing.y = unit(-0.1, "cm"),
+    legend.title = element_blank(),
+    legend.text = element_text(hjust = 0, size = 4.5),
+    legend.key.height = unit(0.35, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    axis.title.x = element_text(size = 6),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.ticks.y = element_blank())
+
+weighted_plot3
+
+
+ggsave(
+  filename = "weighted3.png",
+  plot = weighted_plot3,
+  dpi = 600,
+  path = "02_pipeline/02_sens_testing/final_plots",
+  width = 8,
+  height = 8.5,
+  units = "cm")
+```
+

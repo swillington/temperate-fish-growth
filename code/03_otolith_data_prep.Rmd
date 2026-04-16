@@ -1,0 +1,338 @@
+---
+title: "temp + otolith data"
+author: "Sarah Willington"
+date: "2026-01-28"
+output: html_document
+---
+
+script for all data manipulation for otolith paper. Chapter 3 of my PhD
+
+1. manipulate temp data so that annual means are from oct - sep and summer means are from oct - march
+
+2. merge otolith and temp datasets
+
+3. sub sample bmw, pw and sfh data 
+
+4. add maximum age col
+
+5. calculate temp variables for model, scale and set up data
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+
+```
+
+```{r load libraries}
+library(tidyverse)
+library(here)
+library(patchwork)
+library(colorspace)
+
+library(rlang)
+
+
+```
+
+```{r load otolith data}
+source("01_code/10_importing_otolith_data_all.R")
+
+```
+
+```{r load temp data}
+project_dir <- here::here()
+
+hadisst_path_monthly <- file.path(project_dir, "0_data", "01_raw_data", "HadISST_all_sites_monthly_mean.csv")
+hadisst_monthly <- read_csv(hadisst_path_monthly) |> 
+  rename(fishyear = year) |> 
+  filter(site!="PPB" & site!="WP")
+
+```
+ 
+### 1. manipulate temp data
+
+```{r temp data wrangling HadISST}
+# Oct - Dec temp data
+hadisst_oct <- hadisst_monthly |> 
+  filter(month>9) |>      
+  arrange(fishyear, .by_group = TRUE)
+
+#Jan - Sep temp data
+hadisst_sep <- hadisst_monthly |> 
+  filter(month<10) |>       
+  arrange(fishyear, .by_group = TRUE) |>  
+  mutate(fishyear_neg = fishyear - 1)  |>  #create new col, of the year previous to match up with the oct-dec data, so that when take the mean temp in that year you are taking the correct month-year combo
+  select(-fishyear) |> 
+  rename(fishyear = fishyear_neg)
+
+hadisst_annual <- bind_rows(hadisst_oct, hadisst_sep) |> 
+  filter(fishyear>1904 & fishyear<2025) |> 
+  group_by(site, fishyear) |> 
+  summarise(sst_annual = mean(sst_mean), .groups = "drop") |> 
+  arrange(site, fishyear) |>                      # ensure correct order
+  group_by(site) |>                               # lag within site
+  mutate(sst_annual_lag = dplyr::lag(sst_annual)) |> 
+  unite(siteyear, c(site, fishyear), sep = "_", remove = TRUE) |> 
+  ungroup()
+
+
+## Mean summer temp
+#Oct - Dec temp data
+hadisst_oct <- hadisst_monthly |> 
+  filter(month>9)|>        
+  arrange(fishyear, .by_group = TRUE)
+
+#Jan - Mar temp data
+hadisst_jan <- hadisst_monthly |> 
+  filter(month<4)|>        
+  arrange(fishyear, .by_group = TRUE) |> 
+  mutate(fishyear_neg = fishyear - 1) |> #create new col, of the year previous to match up with the oct-dec data, so that when take the mean temp in that year you are taking the correct month-year combo
+  select(-fishyear) |> 
+  rename(fishyear = fishyear_neg)
+
+hadisst_summer <- bind_rows(hadisst_oct, hadisst_jan)|> 
+  filter(fishyear>1904 & fishyear<2025) |> 
+  group_by(site, fishyear) |> 
+  summarise(sst_summer = mean(sst_mean), .groups = "drop") |> 
+  arrange(site, fishyear) |>                      # ensure correct order
+  group_by(site) |>                               # lag within site
+  mutate(sst_summer_lag = dplyr::lag(sst_summer)) |> 
+  unite(siteyear, c(site, fishyear), sep = "_", remove = TRUE) |> 
+  ungroup()
+
+```
+
+### 2. merge otolith and temp datasets
+
+```{r joining oto and temp data}
+oto_incs <- oto_incs %>% 
+  unite(siteyear, c(site, fishyear), sep = "_", remove = FALSE) |>  
+  left_join(hadisst_annual, by = "siteyear") |> 
+  left_join(hadisst_summer, by = "siteyear")
+
+sfh <- sfh %>% 
+  unite(siteyear, c(site, fishyear), sep = "_", remove = FALSE) |> 
+  left_join(hadisst_annual, by = "siteyear") |> 
+  left_join(hadisst_summer, by = "siteyear")
+
+wrasse <- wrasse %>% 
+  unite(siteyear, c(site, fishyear), sep = "_", remove = FALSE) |>  
+  left_join(hadisst_annual, by = "siteyear") |> 
+  left_join(hadisst_summer, by = "siteyear") |> 
+  mutate(monthcap = as.character(monthcap))
+
+morwong <- morwong %>% 
+  unite(siteyear, c(site, fishyear), sep = "_", remove = FALSE) |>  
+  left_join(hadisst_annual, by = "siteyear") |> 
+  left_join(hadisst_summer, by = "siteyear")|> 
+  mutate(monthcap = as.character(monthcap)) 
+# 
+# write_csv(oto_incs, "0_data/02_cleaned_data/oto_incs_temperature.csv")
+# write_csv(sfh, "0_data/02_cleaned_data/sfh_temperature.csv")
+# write_csv(wrasse, "0_data/02_cleaned_data/wrasse_temperature.csv")
+# write_csv(morwong, "0_data/02_cleaned_data/morwong_temperature.csv")
+
+oto_incs_all <- bind_rows(oto_incs, sfh, wrasse, morwong)
+# write_csv(oto_incs_all, "0_data/02_cleaned_data/oto_incs_full_df_temperature.csv")
+
+```
+
+### 3. sub sample
+
+
+```{r subsample function}
+ subsample_fish <- function(df,
+                            fish_id_col   = "FishID",
+                            age_col       = "age",
+                            site_col      = "site",
+                            n_per_group   = 20,
+                            seed          = 1,
+                            #breaks        = c(2, 5, 10, 15, 20, 25, 35, 50, 70, 90, 110),
+                            breaks        = c(2, 10, 20, 35, 50, 75, 100),
+                            right         = FALSE,
+                            include_lowest = TRUE) {
+   
+   
+   id_sym   <- rlang::sym(fish_id_col)
+   age_sym  <- rlang::sym(age_col)
+   site_sym <- rlang::sym(site_col)
+   
+   # Ensure breaks are sorted and unique
+   breaks <- sort(unique(breaks))
+   
+   # Create labels 
+   make_labels <- function(b) {
+     labs <- character(length(b))
+     for (i in seq_along(b)) {
+       if (i < length(b)) {
+         labs[i] <- paste0(b[i], "-", b[i + 1] - 1)
+       } else {
+         labs[i] <- paste0(b[i], "+")
+       }
+     }
+     labs
+   }
+   labels <- make_labels(breaks)
+   
+   set.seed(seed)
+   
+   # 1) Collapse to unique fish: max age + a single site group per FishID
+   fish_level <- df |>
+     dplyr::group_by(!!id_sym) |>
+     dplyr::summarise(
+       max_age = max(!!age_sym, na.rm = TRUE),
+       site_group = dplyr::first(!!site_sym),
+       .groups = "drop"
+     )
+   
+   # 2) Assign age bins based on max age
+   # Using cut() with breaks + Inf, so the final bin is 110+
+   fish_level <- fish_level |>
+     dplyr::mutate(
+       age_bin = cut(
+         max_age,
+         breaks = c(breaks, Inf),
+         labels = labels,
+         right = right,
+         include.lowest = include_lowest
+       )
+     )
+   
+   # 3) Sample FishIDs within each (site_group x age_bin)
+   sampled_ids <- fish_level |>
+     dplyr::filter(!is.na(age_bin)) |>
+     dplyr::group_by(site_group, age_bin) |>
+     dplyr::summarise(
+       FishID_sampled = list(sample(
+         x = !!id_sym,
+         size = min(n_per_group, dplyr::n()),
+         replace = FALSE
+       )),
+       n_available = dplyr::n(),
+       n_sampled = min(n_per_group, dplyr::n()),
+       .groups = "drop"
+     ) |>
+     tidyr::unnest(FishID_sampled) |>
+     dplyr::pull(FishID_sampled) |>
+     unique()
+   
+   # 4) Return all rows for the sampled FishIDs
+   df_sub <- df |>
+     dplyr::filter(!!id_sym %in% sampled_ids)
+   
+   # Attach a little metadata as attributes (handy for debugging)
+   attr(df_sub, "seed") <- seed
+   attr(df_sub, "n_per_group") <- n_per_group
+   attr(df_sub, "age_breaks") <- breaks
+   df_sub
+ }
+```
+
+```{r run subsample function}
+# run function
+ bmw_sub <- subsample_fish(
+   df = morwong,
+   fish_id_col = "FishID",
+   age_col = "age",
+   site_col = "site",
+   n_per_group = 10,
+   seed = 123
+ )
+ 
+ pw_sub <- subsample_fish(
+   df = wrasse,
+   fish_id_col = "FishID",
+   age_col = "age",
+   site_col = "site",
+   n_per_group = 15,
+   seed = 123
+ )
+ 
+ sfh_sub <- subsample_fish(
+   df = sfh,
+   fish_id_col = "FishID",
+   age_col = "age",
+   site_col = "site",
+   n_per_group = 30,
+   seed = 123
+ )
+ 
+ # Check how many unique FishIDs you got per group:
+ 
+ pw_n <- pw_sub |> distinct(FishID, .keep_all = TRUE) 
+ bmw_n <- bmw_sub |> distinct(FishID, .keep_all = TRUE) 
+ sfh_n <- sfh_sub |> distinct(FishID, .keep_all = TRUE) 
+ 
+ summary <- bmw_sub |> 
+   group_by(site, FishID) |> 
+   # summarise(max_age = max(age), .groups="drop") |> 
+   # mutate(age_bin = cut(max_age, breaks = c(2,5,10,15,20,25,35,50,70,90,110, Inf),
+   #                      labels = c("2-4","5-9","10-14","15-19","20-24","25-34", "35-49","50-69","70-89","90-109","110+"),
+   #                      right = FALSE, include.lowest = TRUE)) |> 
+   summarise(max_age = max(age), .groups="drop") |> 
+   mutate(age_bin = cut(max_age, breaks = c(2, 10, 20, 35, 50, 75, 100, Inf),
+                        labels = c("2-9","10-19","20-34","35-49","50-74", "75-99","100+"),
+                        right = FALSE, include.lowest = TRUE)) |> 
+   count(site, age_bin)
+
+ # write_csv(bmw_sub, "0_data/02_cleaned_data/morwong_subsampled2_temperature.csv")
+ # write_csv(pw_sub, "0_data/02_cleaned_data/wrasse_subsampled2_temperature.csv")
+ # write_csv(sfh_sub, "0_data/02_cleaned_data/sfh_subsampled2_temperature.csv")
+```
+
+### 4. Add max age 
+
+
+```{r add max age}
+
+max_age <- read_csv(file.path(project_dir, "0_data", "01_raw_data", "species_max_age.csv"))
+max_age <- max_age[1:2]
+
+d <- bind_rows(bmw_sub, pw_sub, sfh_sub, oto_incs)
+d_n <- d |> distinct(FishID, .keep_all = TRUE) 
+
+d <- d |>  
+  left_join(max_age, by = "species") 
+
+```
+
+### 5. add variables 
+
+
+```{r}
+hadisst_summer <- hadisst_summer |> 
+  separate(siteyear, c("site", "year"), sep="_")
+
+# get long term annual mean per site
+sst_summer <- hadisst_summer |> 
+  filter(year > 1923) |> 
+  group_by(site) |> 
+  mutate(sst_space = mean(sst_summer), 
+         sst_space_lag = mean(sst_summer_lag)) |> 
+  distinct(site, sst_space, sst_space_lag)
+
+d <- d |> left_join(sst_summer, by = "site")
+
+d <- d |>
+  mutate(
+    FishID = as.factor(FishID),
+    cohort = as.factor(cohort),
+    species = as.factor(species),
+    log_increment = log(increment),
+    log_age = log(age),
+    sst_time = sst_summer - sst_space,
+    species_cohort = interaction(species, cohort), 
+    site_cohort = interaction(site, cohort),
+    species_site_cohort = interaction(species, site, cohort)
+  ) |>
+  # now scale the temperatures
+  mutate(
+    sst_space_sc = (sst_space - mean(sst_space)) / sd(sst_space),
+    sst_time_sc = (sst_time - mean(sst_time)) / sd(sst_time)
+  ) 
+
+#write_csv(d,  "0_data/02_cleaned_data/otolith_analysis.csv")
+```
+
